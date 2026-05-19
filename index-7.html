@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+<meta name="theme-color" content="#0E0E0E"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Life OS"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<title>Life OS</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{height:100%;background:#0E0E0E;overflow:hidden;}
+body{color:#F0F0F0;font-family:'Courier New',monospace;}
+#root{height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+input,select,textarea,button{font-family:inherit;font-size:12px;}
+button{cursor:pointer;}
+::-webkit-scrollbar{width:3px;height:3px;}
+::-webkit-scrollbar-thumb{background:#3a3a3a;border-radius:99px;}
+.page{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px 15px 32px;}
+.nav{display:flex;overflow-x:auto;gap:2px;padding:8px 10px;background:#111;border-bottom:1px solid #ffffff10;-webkit-overflow-scrolling:touch;flex-shrink:0;}
+.nav::-webkit-scrollbar{display:none;}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:#111;border-bottom:1px solid #ffffff10;flex-shrink:0;}
+.bottombar{padding:8px 16px;background:#111;border-top:1px solid #ffffff10;display:flex;justify-content:space-between;font-size:10px;color:#ffffff20;flex-shrink:0;}
+</style>
+</head>
+<body>
+<div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#888;font-size:13px;">Loading...</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script>
+// Pre-transform config - tell Babel to transform before anything runs
+window.BABEL_OPTS = {presets:['react','env']};
+</script>
+<script type="text/babel" data-presets="react,env">
+
+const {useState, useEffect, useCallback, useRef, createElement:h, Fragment} = React;
+
+const SB_URL = "https://pmiynrumpaujbmouycwr.supabase.co";
+const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBtaXlucnVtcGF1amJtb3V5Y3dyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg4MTYzMDMsImV4cCI6MjA5NDM5MjMwM30._zt3C6KfkO8Wi_AZ-KbElW6ocuTKIHevB-hNDdiKE1o";
+const sb = supabase.createClient(SB_URL, SB_KEY);
+
+const A="#C8F562",BG="#0E0E0E",PL="#161616",P2="#1E1E1E",MU="#3a3a3a",TX="#F0F0F0",DIM="#888";
+const PCOL={Health:"#ff6b6b",Growth:A,Love:"#f7a8d8",Money:"#ffd166",Career:"#74b9ff",Soul:"#a29bfe"};
+const TCOL={Partner:"#f7a8d8",Family:"#ffd166",Friend:A,Mentor:"#74b9ff",Colleague:"#a29bfe",Other:DIM};
+const PRICOL={high:"#ff6b6b",med:"#ffd166",low:DIM};
+const AREAS=["Health","Growth","Love","Money","Career","Soul","People","Work","Personal"];
+const TOUCH=["Today","Yesterday","2 days ago","3 days ago","5 days ago","1 week ago","2 weeks ago","1 month ago","Longer ago"];
+const STATUSES=["Active","Paused","Done"];
+const TODAY=new Date().toISOString().slice(0,10);
+
+const PILLAR_DEF=[
+  {label:"Health",score:0,color:"#ff6b6b",sub:"tap to set"},
+  {label:"Growth",score:0,color:A,sub:"tap to set"},
+  {label:"Love",score:0,color:"#f7a8d8",sub:"tap to set"},
+  {label:"Money",score:0,color:"#ffd166",sub:"tap to set"},
+  {label:"Career",score:0,color:"#74b9ff",sub:"tap to set"},
+  {label:"Soul",score:0,color:"#a29bfe",sub:"tap to set"},
+];
+
+// ── DB ──
+let _userId = null;
+let _store = {};
+let _listeners = {};
+let _dirty = {};
+let _debounces = {};
+
+function dbListen(key, fn) {
+  if (!_listeners[key]) _listeners[key] = [];
+  _listeners[key].push(fn);
+  return () => { _listeners[key] = _listeners[key].filter(f => f !== fn); };
+}
+
+function dbNotify(key) {
+  (_listeners[key] || []).forEach(fn => fn(_store[key]));
+}
+
+function dbGet(key, def) {
+  return _store[key] !== undefined ? _store[key] : def;
+}
+
+function dbSet(key, valOrFn) {
+  const prev = _store[key];
+  const next = typeof valOrFn === 'function' ? valOrFn(prev) : valOrFn;
+  _store[key] = next;
+  try { localStorage.setItem('los8_' + key, JSON.stringify(next)); } catch(e) {}
+  dbNotify(key);
+  clearTimeout(_debounces[key]);
+  _debounces[key] = setTimeout(() => pushKey(key, next), 1500);
+}
+
+function pushKey(key, val) {
+  if (!_userId) return;
+  const patch = {};
+  patch[key] = val;
+  sb.from('lifeos_data').upsert({
+    user_id: _userId,
+    data: Object.assign({}, _store),
+    updated_at: new Date().toISOString()
+  }).then(() => {}).catch(() => {});
+}
+
+function loadStore(userId) {
+  _userId = userId;
+  return new Promise((resolve) => {
+    // first load from localStorage
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('los8_')) {
+        try { _store[k.slice(5)] = JSON.parse(localStorage.getItem(k)); } catch(e) {}
+      }
+    }
+    // then override with cloud data
+    sb.from('lifeos_data').select('data').eq('user_id', userId).single()
+      .then(({data, error}) => {
+        if (data && data.data) {
+          Object.assign(_store, data.data);
+          // sync back to localStorage
+          Object.keys(_store).forEach(k => {
+            try { localStorage.setItem('los8_' + k, JSON.stringify(_store[k])); } catch(e) {}
+          });
+        }
+        resolve();
+      })
+      .catch(() => resolve());
+  });
+}
+
+// ── HOOK ──
+function useDb(key, def) {
+  const [val, setVal] = useState(() => dbGet(key, def));
+  useEffect(() => {
+    setVal(dbGet(key, def));
+    return dbListen(key, (v) => setVal(v !== undefined ? v : def));
+  }, [key]);
+  const set = useCallback((v) => dbSet(key, v), [key]);
+  return [val, set];
+}
+
+// ── UI atoms ──
+const s = (obj) => obj;
+function Pill({color, children}) {
+  return <span style={{fontSize:10,padding:'2px 8px',borderRadius:99,background:color+'25',color,fontWeight:700}}>{children}</span>;
+}
+function SL({children, mb=12}) {
+  return <div style={{fontSize:10,color:DIM,letterSpacing:3,textTransform:'uppercase',marginBottom:mb,fontWeight:600}}>{children}</div>;
+}
+function Card({children, style}) {
+  return <div style={{background:PL,border:'1px solid #ffffff0a',borderRadius:14,padding:'15px 17px',...style}}>{children}</div>;
+}
+function TInput({value, onChange, placeholder, type='text', style, onKeyDown}) {
+  return <input type={type} value={value} onChange={onChange} placeholder={placeholder} onKeyDown={onKeyDown}
+    style={{background:P2,border:'1px solid #ffffff14',borderRadius:8,padding:'8px 11px',color:TX,fontSize:12,outline:'none',width:'100%',boxSizing:'border-box',...style}}/>;
+}
+function TArea({value, onChange, placeholder, rows=3}) {
+  return <textarea value={value} onChange={onChange} placeholder={placeholder} rows={rows}
+    style={{background:P2,border:'1px solid #ffffff14',borderRadius:8,padding:'8px 11px',color:TX,fontSize:12,outline:'none',width:'100%',boxSizing:'border-box',resize:'vertical'}}/>;
+}
+function TSelect({value, onChange, options, style}) {
+  return <select value={value} onChange={onChange}
+    style={{background:P2,border:'1px solid #ffffff14',borderRadius:8,padding:'8px 11px',color:TX,fontSize:12,width:'100%',boxSizing:'border-box',...style}}>
+    {options.map(o => <option key={o}>{o}</option>)}
+  </select>;
+}
+function Btn({onClick, children, v='p', style}) {
+  const bg = v==='p'?A:v==='g'?'#ffffff0a':v==='d'?'#ff6b6b18':'#ffffff08';
+  const cl = v==='p'?'#000':v==='g'?DIM:v==='d'?'#ff6b6b':DIM;
+  return <button onClick={onClick} style={{background:bg,border:'none',borderRadius:8,padding:'8px 13px',color:cl,fontWeight:700,fontSize:12,...style}}>{children}</button>;
+}
+function DAdd({onClick, label='+ Add'}) {
+  return <button onClick={onClick} style={{background:'transparent',border:`1.5px dashed ${MU}`,borderRadius:12,padding:'11px',color:DIM,fontSize:13,width:'100%'}}>{label}</button>;
+}
+
+// ══ AUTH ══
+function Auth({onAuth}) {
+  const [mode, setMode] = useState('login');
+  const [email, setEmail] = useState('');
+  const [pass, setPass] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = () => {
+    if (!email || !pass) { setErr('Fill in both fields'); return; }
+    setBusy(true); setErr('');
+    const fn = mode==='login'
+      ? sb.auth.signInWithPassword({email, password:pass})
+      : sb.auth.signUp({email, password:pass});
+    fn.then(({data, error}) => {
+      setBusy(false);
+      if (error) { setErr(error.message); return; }
+      if (data.user) { onAuth(data.user); }
+      else setErr('Check your email to confirm, then log in.');
+    }).catch(e => { setBusy(false); setErr(e.message||'Error'); });
+  };
+
+  return (
+    <div style={{height:'100vh',background:BG,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:24,overflowY:'auto'}}>
+      <div style={{width:'100%',maxWidth:340}}>
+        <div style={{textAlign:'center',marginBottom:32}}>
+          <div style={{width:52,height:52,background:A,borderRadius:14,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,fontWeight:900,color:'#000',margin:'0 auto 14px'}}>J</div>
+          <div style={{fontSize:22,fontWeight:900,color:TX}}>Jjoo's Life OS</div>
+          <div style={{fontSize:12,color:DIM,marginTop:6}}>Your second brain, synced everywhere</div>
+        </div>
+        <Card style={{display:'flex',flexDirection:'column',gap:12}}>
+          <div style={{display:'flex',gap:6}}>
+            {['login','signup'].map(m =>
+              <button key={m} onClick={()=>setMode(m)} style={{flex:1,padding:'8px',borderRadius:8,border:'none',background:mode===m?A:'#ffffff0a',color:mode===m?'#000':DIM,fontWeight:mode===m?800:500,fontSize:12}}>
+                {m==='login'?'Log In':'Sign Up'}
+              </button>
+            )}
+          </div>
+          <TInput value={email} onChange={e=>setEmail(e.target.value)} placeholder="Email" type="email"/>
+          <TInput value={pass} onChange={e=>setPass(e.target.value)} placeholder="Password (min 6 chars)" type="password" onKeyDown={e=>e.key==='Enter'&&submit()}/>
+          {err && <div style={{fontSize:12,color:'#ff6b6b',background:'#ff6b6b12',padding:'8px 11px',borderRadius:8}}>{err}</div>}
+          <Btn onClick={submit} style={{width:'100%',padding:'12px',fontSize:14}}>{busy?'...':(mode==='login'?'Log In →':'Create Account →')}</Btn>
+        </Card>
+        <div style={{textAlign:'center',fontSize:11,color:DIM,marginTop:16}}>Syncs across all your devices</div>
+      </div>
+    </div>
+  );
+}
+
+// ══ HOME ══
+const DEF_TASKS=[{id:1,text:"Review Q2 budget",area:"Money",pri:"high",done:false},{id:2,text:"Send portfolio to client",area:"Work",pri:"high",done:false},{id:3,text:"Plan anniversary dinner",area:"Love",pri:"med",done:true},{id:4,text:"30-min run",area:"Health",pri:"med",done:false},{id:5,text:"Finish chapter 4",area:"Growth",pri:"low",done:true},{id:6,text:"Call mom",area:"People",pri:"med",done:false}];
+
+function Home() {
+  const [tasks, setTasks] = useDb('tasks', DEF_TASKS);
+  const [pillars, setPillars] = useDb('pillars', PILLAR_DEF);
+  const [adding, setAdding] = useState(false);
+  const [newT, setNewT] = useState({text:'',area:'Health',pri:'med'});
+  const [editP, setEditP] = useState(null);
+  const [pScore, setPScore] = useState('');
+  const [pSub, setPSub] = useState('');
+
+  const hr = new Date().getHours();
+  const greeting = hr<12?'Good morning':hr<18?'Good afternoon':'Good evening';
+  const ls = Math.round((pillars||PILLAR_DEF).reduce((a,p)=>a+p.score,0)/(pillars||PILLAR_DEF).length);
+
+  const toggle = id => setTasks(t=>t.map(x=>x.id===id?{...x,done:!x.done}:x));
+  const del = id => setTasks(t=>t.filter(x=>x.id!==id));
+  const add = () => {
+    if (!newT.text.trim()) return;
+    setTasks(t=>[...t,{...newT,id:Date.now(),done:false}]);
+    setNewT({text:'',area:'Health',pri:'med'}); setAdding(false);
+  };
+  const openEditP = (i) => {
+    const p = (pillars||PILLAR_DEF)[i];
+    setPScore(String(p.score)); setPSub(p.sub==='tap to set'?'':p.sub); setEditP(i);
+  };
+  const saveP = () => {
+    const sc = Math.min(100,Math.max(0,Number(pScore)||0));
+    setPillars(ps=>(ps||PILLAR_DEF).map((x,j)=>j===editP?{...x,score:sc,sub:pSub||'updated'}:x));
+    setEditP(null);
+  };
+
+  const pArr = pillars || PILLAR_DEF;
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:18}}>
+      <div style={{background:'linear-gradient(135deg,#1a1a1a,#111)',border:'1px solid #ffffff08',borderRadius:18,padding:24,position:'relative',overflow:'hidden'}}>
+        <div style={{position:'absolute',top:-40,right:-40,width:160,height:160,background:A+'08',borderRadius:'50%',filter:'blur(50px)'}}/>
+        <div style={{fontSize:12,color:DIM,marginBottom:5}}>{greeting}, Jjoo 👋</div>
+        <div style={{fontSize:26,fontWeight:900,lineHeight:1.2}}>Your Life OS<br/><span style={{color:A}}>is running.</span></div>
+        <div style={{marginTop:16,display:'flex',alignItems:'center',gap:16}}>
+          <div>
+            <div style={{fontSize:10,color:DIM,marginBottom:2}}>Life Score</div>
+            <div style={{fontSize:36,fontWeight:900,color:A,lineHeight:1}}>{ls}<span style={{fontSize:13,color:MU}}>/100</span></div>
+          </div>
+          <div style={{flex:1,display:'flex',flexWrap:'wrap',gap:6}}>
+            {pArr.map(p=>(
+              <div key={p.label}>
+                <div style={{fontSize:9,color:DIM}}>{p.label}</div>
+                <div style={{width:30,height:4,background:MU,borderRadius:99,overflow:'hidden',marginTop:2}}>
+                  <div style={{width:`${p.score}%`,height:'100%',background:p.color,borderRadius:99}}/>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <Card>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+          <SL mb={0}>Today's Focus</SL>
+          <Btn onClick={()=>setAdding(a=>!a)} v="g" style={{fontSize:11,padding:'5px 11px'}}>+ Task</Btn>
+        </div>
+        {adding && (
+          <div style={{display:'flex',flexDirection:'column',gap:7,marginBottom:12,padding:12,background:P2,borderRadius:10,border:`1px solid ${A}30`}}>
+            <TInput value={newT.text} onChange={e=>setNewT(t=>({...t,text:e.target.value}))} placeholder="What needs to get done?" onKeyDown={e=>e.key==='Enter'&&add()}/>
+            <div style={{display:'flex',gap:7}}>
+              <TSelect value={newT.area} onChange={e=>setNewT(t=>({...t,area:e.target.value}))} options={AREAS} style={{flex:1}}/>
+              <TSelect value={newT.pri} onChange={e=>setNewT(t=>({...t,pri:e.target.value}))} options={['high','med','low']} style={{width:90}}/>
+              <Btn onClick={add}>Add</Btn>
+            </div>
+          </div>
+        )}
+        <div style={{display:'flex',flexDirection:'column',gap:7}}>
+          {(tasks||[]).map(t=>(
+            <div key={t.id} style={{display:'flex',alignItems:'center',gap:10,padding:'9px 11px',borderRadius:10,background:t.done?'#ffffff04':'#ffffff07',opacity:t.done?0.45:1}}>
+              <div onClick={()=>toggle(t.id)} style={{width:18,height:18,borderRadius:5,flexShrink:0,border:`1.5px solid ${t.done?A:MU}`,background:t.done?A:'transparent',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                {t.done&&<span style={{fontSize:10,color:'#000',fontWeight:900}}>✓</span>}
+              </div>
+              <span style={{flex:1,fontSize:13,color:TX,textDecoration:t.done?'line-through':'none'}}>{t.text}</span>
+              <Pill color={PRICOL[t.pri]}>{t.area}</Pill>
+              <Btn onClick={()=>del(t.id)} v="d" style={{padding:'3px 7px'}}>✕</Btn>
+            </div>
+          ))}
+          {(!tasks||tasks.length===0)&&<div style={{textAlign:'center',color:DIM,fontSize:13,padding:16}}>No tasks — add one 🎯</div>}
+        </div>
+      </Card>
+
+      <div>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+          <SL mb={0}>Life Pillars</SL>
+          <span style={{fontSize:10,color:DIM}}>tap to edit</span>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:9}}>
+          {pArr.map((p,i)=>(
+            editP===i ? (
+              <div key={p.label} style={{background:PL,border:`1px solid ${p.color}50`,borderRadius:12,padding:10,gridColumn:'span 1'}}>
+                <div style={{fontSize:10,color:p.color,fontWeight:700,marginBottom:6}}>{p.label}</div>
+                <input type="number" value={pScore} onChange={e=>setPScore(e.target.value)} placeholder="0-100"
+                  style={{background:P2,border:'1px solid #ffffff14',borderRadius:6,padding:'5px 8px',color:TX,fontSize:14,fontWeight:900,width:'100%',outline:'none',boxSizing:'border-box'}}/>
+                <input value={pSub} onChange={e=>setPSub(e.target.value)} placeholder="note"
+                  style={{background:P2,border:'1px solid #ffffff14',borderRadius:6,padding:'4px 8px',color:DIM,fontSize:10,width:'100%',outline:'none',boxSizing:'border-box',marginTop:4}}/>
+                <div style={{display:'flex',gap:4,marginTop:6}}>
+                  <button onClick={saveP} style={{flex:1,background:A,border:'none',borderRadius:5,padding:5,color:'#000',fontWeight:800,fontSize:10}}>Save</button>
+                  <button onClick={()=>setEditP(null)} style={{background:'#ffffff0a',border:'none',borderRadius:5,padding:'5px 8px',color:DIM,fontSize:10}}>✕</button>
+                </div>
+              </div>
+            ) : (
+              <div key={p.label} onClick={()=>openEditP(i)} style={{background:PL,border:'1px solid #ffffff08',borderRadius:12,padding:12,position:'relative',overflow:'hidden'}}>
+                <div style={{position:'absolute',top:0,left:0,right:0,height:2,background:p.color}}/>
+                <div style={{fontSize:20,fontWeight:900,color:p.color}}>{p.score}</div>
+                <div style={{fontSize:11,fontWeight:700,color:TX,marginTop:2}}>{p.label}</div>
+                <div style={{fontSize:10,color:DIM,marginTop:2}}>{p.sub}</div>
+              </div>
+            )
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══ HABITS ══
+const DEF_HABITS=[{id:1,name:"Drink 2L water",emoji:"💧",pillar:"Health",streak:0,lastDone:"",history:[]},{id:2,name:"Exercise 30 mins",emoji:"🏃",pillar:"Health",streak:0,lastDone:"",history:[]},{id:3,name:"No phone first 10 min",emoji:"📵",pillar:"Soul",streak:0,lastDone:"",history:[]},{id:4,name:"Read 20 pages",emoji:"📖",pillar:"Growth",streak:0,lastDone:"",history:[]},{id:5,name:"Journal entry",emoji:"📝",pillar:"Soul",streak:0,lastDone:"",history:[]},{id:6,name:"Message someone I love",emoji:"💌",pillar:"Love",streak:0,lastDone:"",history:[]}];
+function Habits() {
+  const [habits, setHabits] = useDb('habits', DEF_HABITS);
+  const [adding, setAdding] = useState(false);
+  const [newH, setNewH] = useState({name:'',emoji:'⭐',pillar:'Health'});
+  const check = id => setHabits(h=>(h||[]).map(x=>{if(x.id!==id||x.lastDone===TODAY)return x;const hist=[...(x.history||[]),TODAY].slice(-30);return{...x,streak:(x.streak||0)+1,lastDone:TODAY,history:hist};}));
+  const del = id => setHabits(h=>(h||[]).filter(x=>x.id!==id));
+  const add = () => {if(!newH.name.trim())return;setHabits(h=>[...(h||[]),{...newH,id:Date.now(),streak:0,lastDone:'',history:[]}]);setNewH({name:'',emoji:'⭐',pillar:'Health'});setAdding(false);};
+  const arr = habits||[];
+  const done = arr.filter(h=>h.lastDone===TODAY).length;
+  const pct = arr.length?Math.round(done/arr.length*100):0;
+  const last7 = Array.from({length:7}).map((_,i)=>{const d=new Date();d.setDate(d.getDate()-(6-i));return d.toISOString().slice(0,10);});
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:14}}>
+      <Card style={{padding:'13px 17px'}}>
+        <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
+          <span style={{fontSize:13,fontWeight:700,color:TX}}>Today — {done}/{arr.length} done</span>
+          <span style={{fontSize:15,fontWeight:900,color:pct===100?A:TX}}>{pct}%</span>
+        </div>
+        <div style={{background:MU,borderRadius:99,height:6,overflow:'hidden'}}><div style={{width:`${pct}%`,height:'100%',background:A,borderRadius:99}}/></div>
+      </Card>
+      {arr.map(h=>{
+        const doneToday=h.lastDone===TODAY;const col=PCOL[h.pillar]||A;
+        return <Card key={h.id} style={{borderLeft:`3px solid ${col}40`}}>
+          <div style={{display:'flex',alignItems:'center',gap:12}}>
+            <div onClick={()=>check(h.id)} style={{width:26,height:26,borderRadius:8,flexShrink:0,border:`2px solid ${doneToday?col:MU}`,background:doneToday?col:'transparent',display:'flex',alignItems:'center',justifyContent:'center'}}>
+              {doneToday&&<span style={{fontSize:13,color:'#000',fontWeight:900}}>✓</span>}
+            </div>
+            <span style={{fontSize:18,flexShrink:0}}>{h.emoji}</span>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,fontWeight:600,color:doneToday?DIM:TX,textDecoration:doneToday?'line-through':'none'}}>{h.name}</div>
+              <div style={{fontSize:11,color:DIM,marginTop:2}}><span style={{color:col}}>{h.pillar}</span></div>
+            </div>
+            <div style={{textAlign:'right',flexShrink:0}}>
+              <div style={{fontSize:20,fontWeight:900,color:(h.streak||0)>=7?A:TX}}>{h.streak||0}</div>
+              <div style={{fontSize:9,color:DIM,letterSpacing:1}}>STREAK 🔥</div>
+            </div>
+            <Btn onClick={()=>del(h.id)} v="d" style={{padding:'3px 7px',fontSize:11}}>✕</Btn>
+          </div>
+          <div style={{display:'flex',gap:4,marginTop:10}}>
+            {last7.map(d=>{const hit=(h.history||[]).includes(d)||(d===TODAY&&doneToday);return<div key={d} style={{flex:1,height:6,borderRadius:3,background:hit?col:MU}}/>;})}</div>
+          <div style={{display:'flex',justifyContent:'space-between',marginTop:3}}><span style={{fontSize:9,color:DIM}}>7d ago</span><span style={{fontSize:9,color:DIM}}>today</span></div>
+        </Card>;
+      })}
+      {adding?<Card style={{borderColor:A+'30',display:'flex',flexDirection:'column',gap:8}}>
+        <SL>New Habit</SL>
+        <div style={{display:'flex',gap:7}}><TInput value={newH.emoji} onChange={e=>setNewH(h=>({...h,emoji:e.target.value}))} style={{width:48}}/><TInput value={newH.name} onChange={e=>setNewH(h=>({...h,name:e.target.value}))} placeholder="Habit name" style={{flex:1}}/></div>
+        <TSelect value={newH.pillar} onChange={e=>setNewH(h=>({...h,pillar:e.target.value}))} options={Object.keys(PCOL)}/>
+        <div style={{display:'flex',gap:7}}><Btn onClick={add} style={{flex:1}}>+ Add Habit</Btn><Btn onClick={()=>setAdding(false)} v="g">Cancel</Btn></div>
+      </Card>:<DAdd onClick={()=>setAdding(true)} label="+ Add habit"/>}
+    </div>
+  );
+}
+
+// ══ ROUTINE ══
+const DEF_MOR=[{id:'m1',time:'06:00',label:'Wake up + no phone',emoji:'☀️',duration:10,pillar:'Soul',done:false},{id:'m2',time:'06:10',label:'Hydrate',emoji:'💧',duration:5,pillar:'Health',done:false},{id:'m3',time:'06:15',label:'Stretch',emoji:'🧘',duration:15,pillar:'Health',done:false},{id:'m4',time:'06:30',label:'Journal',emoji:'📝',duration:10,pillar:'Soul',done:false},{id:'m5',time:'06:40',label:'Review top 3',emoji:'🎯',duration:10,pillar:'Growth',done:false},{id:'m6',time:'06:50',label:'Get ready',emoji:'🍳',duration:30,pillar:'Health',done:false}];
+const DEF_EVE=[{id:'e1',time:'20:00',label:'Wrap up work',emoji:'💼',duration:15,pillar:'Career',done:false},{id:'e2',time:'20:15',label:'Plan tomorrow',emoji:'📋',duration:10,pillar:'Growth',done:false},{id:'e3',time:'20:25',label:'Connect with GF',emoji:'💌',duration:30,pillar:'Love',done:false},{id:'e4',time:'21:00',label:'Read',emoji:'📖',duration:20,pillar:'Growth',done:false},{id:'e5',time:'21:20',label:'Wind down',emoji:'🌙',duration:20,pillar:'Health',done:false},{id:'e6',time:'21:40',label:'Sleep',emoji:'😴',duration:0,pillar:'Health',done:false}];
+function Routine() {
+  const [tab,setTab]=useState('morning');
+  const [morning,setMorning]=useDb('rm',DEF_MOR);
+  const [evening,setEvening]=useDb('re',DEF_EVE);
+  const [custom,setCustom]=useDb('rc',[]);
+  const [editing,setEditing]=useState(null);
+  const [adding,setAdding]=useState(false);
+  const [newB,setNewB]=useState({time:'',label:'',emoji:'⭐',duration:15,pillar:'Health'});
+  const lists={morning:morning||[],evening:evening||[],custom:custom||[]};
+  const sets={morning:setMorning,evening:setEvening,custom:setCustom};
+  const active=lists[tab]; const setActive=sets[tab];
+  const done=active.filter(b=>b.done).length;
+  const pct=active.length?Math.round(done/active.length*100):0;
+  const toggle=id=>setActive(a=>(a||[]).map(b=>b.id===id?{...b,done:!b.done}:b));
+  const upd=(id,f,v)=>setActive(a=>(a||[]).map(b=>b.id===id?{...b,[f]:v}:b));
+  const del=id=>setActive(a=>(a||[]).filter(b=>b.id!==id));
+  const add=()=>{if(!newB.label.trim())return;setActive(a=>[...(a||[]),{...newB,id:Date.now(),done:false}]);setNewB({time:'',label:'',emoji:'⭐',duration:15,pillar:'Health'});setAdding(false);};
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:13}}>
+      <div style={{display:'flex',gap:6}}>
+        {['morning','evening','custom'].map(t=><button key={t} onClick={()=>setTab(t)} style={{flex:1,padding:'8px 0',borderRadius:10,border:'none',background:tab===t?A:P2,color:tab===t?'#000':DIM,fontWeight:tab===t?800:500,fontSize:12,textTransform:'capitalize'}}>{t==='morning'?'☀️ Morning':t==='evening'?'🌙 Evening':'✏️ Custom'}</button>)}
+      </div>
+      {active.length>0&&<Card style={{padding:'11px 15px'}}>
+        <div style={{display:'flex',justifyContent:'space-between',marginBottom:6}}><span style={{fontSize:13,fontWeight:700,color:TX}}>Progress</span><span style={{fontSize:14,fontWeight:900,color:pct===100?A:TX}}>{pct}%</span></div>
+        <div style={{background:MU,borderRadius:99,height:5,overflow:'hidden'}}><div style={{width:`${pct}%`,height:'100%',background:A,borderRadius:99}}/></div>
+        <div style={{fontSize:11,color:DIM,marginTop:4}}>{done}/{active.length} done {pct===100?'🎉':''}</div>
+      </Card>}
+      <div style={{display:'flex',flexDirection:'column',gap:7}}>
+        {active.length===0&&<Card style={{textAlign:'center',color:DIM,fontSize:13,padding:24}}>No blocks yet 👇</Card>}
+        {active.map(b=>editing===b.id?(
+          <Card key={b.id} style={{display:'flex',flexDirection:'column',gap:7,borderColor:A+'40'}}>
+            <div style={{display:'flex',gap:6}}><TInput value={b.emoji} onChange={e=>upd(b.id,'emoji',e.target.value)} style={{width:44}}/><TInput value={b.time} onChange={e=>upd(b.id,'time',e.target.value)} placeholder="06:00" style={{width:68}}/><TInput value={b.label} onChange={e=>upd(b.id,'label',e.target.value)} placeholder="Block name" style={{flex:1}}/></div>
+            <div style={{display:'flex',gap:6}}><TInput value={b.duration} onChange={e=>upd(b.id,'duration',e.target.value)} placeholder="mins" style={{width:68}}/><TSelect value={b.pillar} onChange={e=>upd(b.id,'pillar',e.target.value)} options={Object.keys(PCOL)} style={{flex:1}}/><Btn onClick={()=>setEditing(null)}>Save</Btn></div>
+          </Card>
+        ):(
+          <div key={b.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',borderRadius:12,background:b.done?'#ffffff04':PL,border:`1px solid ${b.done?'#ffffff08':(PCOL[b.pillar]||A)+'25'}`,opacity:b.done?0.5:1}}>
+            <div onClick={()=>toggle(b.id)} style={{width:20,height:20,borderRadius:6,flexShrink:0,border:`1.5px solid ${b.done?A:MU}`,background:b.done?A:'transparent',display:'flex',alignItems:'center',justifyContent:'center'}}>{b.done&&<span style={{fontSize:11,color:'#000',fontWeight:900}}>✓</span>}</div>
+            <span style={{fontSize:17,flexShrink:0}}>{b.emoji}</span>
+            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600,color:TX}}>{b.label}</div><div style={{fontSize:11,color:DIM,marginTop:1}}>{b.time&&<>{b.time} · </>}{b.duration>0&&<>{b.duration}m · </>}<span style={{color:PCOL[b.pillar]||A}}>{b.pillar}</span></div></div>
+            <Btn onClick={()=>setEditing(b.id)} v="i" style={{fontSize:11,padding:'4px 9px'}}>✏️</Btn>
+            <Btn onClick={()=>del(b.id)} v="d" style={{fontSize:11,padding:'4px 8px'}}>✕</Btn>
+          </div>
+        ))}
+      </div>
+      {adding?<Card style={{borderColor:A+'30',display:'flex',flexDirection:'column',gap:7}}>
+        <SL>New Block</SL>
+        <div style={{display:'flex',gap:6}}><TInput value={newB.emoji} onChange={e=>setNewB(b=>({...b,emoji:e.target.value}))} style={{width:44}}/><TInput value={newB.time} onChange={e=>setNewB(b=>({...b,time:e.target.value}))} placeholder="06:00" style={{width:68}}/><TInput value={newB.label} onChange={e=>setNewB(b=>({...b,label:e.target.value}))} placeholder="Block name" style={{flex:1}}/></div>
+        <div style={{display:'flex',gap:6}}><TInput value={newB.duration} onChange={e=>setNewB(b=>({...b,duration:e.target.value}))} placeholder="mins" style={{width:68}}/><TSelect value={newB.pillar} onChange={e=>setNewB(b=>({...b,pillar:e.target.value}))} options={Object.keys(PCOL)} style={{flex:1}}/></div>
+        <div style={{display:'flex',gap:6}}><Btn onClick={add} style={{flex:1}}>+ Add Block</Btn><Btn onClick={()=>setAdding(false)} v="g">Cancel</Btn></div>
+      </Card>:<DAdd onClick={()=>setAdding(true)} label="+ Add block"/>}
+    </div>
+  );
+}
+
+// ══ MIND ══
+const TAG_C={Idea:A,Learn:'#74b9ff',Note:'#ffd166',Reflect:'#f7a8d8',Task:'#ff6b6b'};
+const DEF_MIND=[{id:1,text:'Idea: content calendar for freelance',tag:'Idea'},{id:2,text:'Learn about index funds',tag:'Learn'},{id:3,text:'Book rec from Mark',tag:'Note'}];
+function Mind() {
+  const [items,setItems]=useDb('mind',DEF_MIND);
+  const [cap,setCap]=useState('');const [tag,setTag]=useState('Note');
+  const add=()=>{if(!cap.trim())return;setItems(i=>[{id:Date.now(),text:cap,tag},...(i||[])]);setCap('');};
+  const del=id=>setItems(i=>(i||[]).filter(x=>x.id!==id));
+  const arr=items||[];
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:16}}>
+      <Card><SL>Quick Capture</SL>
+        <div style={{display:'flex',flexDirection:'column',gap:7}}>
+          <TInput value={cap} onChange={e=>setCap(e.target.value)} onKeyDown={e=>e.key==='Enter'&&add()} placeholder="What's on your mind..."/>
+          <div style={{display:'flex',gap:7}}><TSelect value={tag} onChange={e=>setTag(e.target.value)} options={Object.keys(TAG_C)} style={{flex:1}}/><Btn onClick={add}>+ Add</Btn></div>
+        </div>
+        <div style={{display:'flex',flexDirection:'column',gap:7,marginTop:12}}>
+          {arr.map(it=><div key={it.id} style={{display:'flex',alignItems:'center',gap:9,padding:'9px 12px',background:P2,borderRadius:10,border:'1px solid #ffffff07'}}>
+            <span style={{flex:1,fontSize:13,color:TX}}>{it.text}</span>
+            <Pill color={TAG_C[it.tag]||DIM}>{it.tag}</Pill>
+            <Btn onClick={()=>del(it.id)} v="d" style={{padding:'3px 7px'}}>×</Btn>
+          </div>)}
+          {arr.length===0&&<div style={{textAlign:'center',color:DIM,fontSize:13,padding:12}}>Brain's empty 🧠</div>}
+        </div>
+      </Card>
+      <Card><SL>Weekly Reflection</SL>
+        {[['What went well?','Got great feedback on the project.'],['What drained me?','Procrastinating on budget stuff.'],['What do I want to improve?','Start morning with intention, not my phone.']].map(([q,a])=><div key={q} style={{marginBottom:13}}><div style={{fontSize:12,color:A,fontWeight:700,marginBottom:5}}>{q}</div><div style={{fontSize:13,color:DIM,lineHeight:1.6,fontStyle:'italic'}}>"{a}"</div></div>)}
+      </Card>
+    </div>
+  );
+}
+
+// ══ GOALS ══
+const DEF_GOALS=[{id:1,title:'Save ₱50,000 emergency fund',pillar:'Money',progress:0,by:'2026-06-30',steps:8,doneSteps:0},{id:2,title:'Complete UX design course',pillar:'Growth',progress:0,by:'2026-07-15',steps:12,doneSteps:0},{id:3,title:'Run 5km without stopping',pillar:'Health',progress:0,by:'2026-05-31',steps:6,doneSteps:0}];
+function Goals() {
+  const [goals,setGoals]=useDb('goals',DEF_GOALS);
+  const [editing,setEditing]=useState(null);const [adding,setAdding]=useState(false);const [draft,setDraft]=useState({});const [newG,setNewG]=useState({title:'',pillar:'Health',by:'',steps:5});
+  const arr=goals||[];
+  const se=g=>{setDraft({...g});setEditing(g.id);};
+  const save=()=>{setGoals(g=>(g||[]).map(x=>x.id===editing?{...draft,id:editing}:x));setEditing(null);};
+  const del=id=>setGoals(g=>(g||[]).filter(x=>x.id!==id));
+  const addG=()=>{if(!newG.title.trim())return;setGoals(g=>[...(g||[]),{...newG,id:Date.now(),progress:0,doneSteps:0,steps:Number(newG.steps)}]);setNewG({title:'',pillar:'Health',by:'',steps:5});setAdding(false);};
+  const stepTap=(id,i)=>setGoals(g=>(g||[]).map(x=>{if(x.id!==id)return x;const d=i<x.doneSteps?i:i+1;return{...x,doneSteps:d,progress:Math.round(d/x.steps*100)};}));
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:14}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><SL mb={0}>Goals</SL><Btn onClick={()=>setAdding(a=>!a)} v="g" style={{fontSize:11,padding:'5px 11px'}}>+ Add goal</Btn></div>
+      {adding&&<Card style={{borderColor:A+'30',display:'flex',flexDirection:'column',gap:8}}><SL>New Goal</SL><TInput value={newG.title} onChange={e=>setNewG(g=>({...g,title:e.target.value}))} placeholder="Goal title"/><div style={{display:'flex',gap:7}}><TSelect value={newG.pillar} onChange={e=>setNewG(g=>({...g,pillar:e.target.value}))} options={Object.keys(PCOL)} style={{flex:1}}/><TInput value={newG.by} onChange={e=>setNewG(g=>({...g,by:e.target.value}))} type="date" style={{flex:1}}/></div><TInput value={newG.steps} onChange={e=>setNewG(g=>({...g,steps:e.target.value}))} placeholder="Milestones" type="number"/><div style={{display:'flex',gap:7}}><Btn onClick={addG} style={{flex:1}}>+ Add Goal</Btn><Btn onClick={()=>setAdding(false)} v="g">Cancel</Btn></div></Card>}
+      {arr.map(g=>editing===g.id?(
+        <Card key={g.id} style={{borderColor:A+'30',display:'flex',flexDirection:'column',gap:8}}><SL>Edit Goal</SL><TInput value={draft.title} onChange={e=>setDraft(d=>({...d,title:e.target.value}))} placeholder="Goal title"/><div style={{display:'flex',gap:7}}><TSelect value={draft.pillar} onChange={e=>setDraft(d=>({...d,pillar:e.target.value}))} options={Object.keys(PCOL)} style={{flex:1}}/><TInput value={draft.by} onChange={e=>setDraft(d=>({...d,by:e.target.value}))} type="date" style={{flex:1}}/></div><div style={{display:'flex',gap:7}}><TInput value={draft.steps} onChange={e=>setDraft(d=>({...d,steps:Number(e.target.value)}))} placeholder="Milestones" type="number" style={{flex:1}}/><TInput value={draft.doneSteps} onChange={e=>setDraft(d=>({...d,doneSteps:Number(e.target.value),progress:Math.round(Number(e.target.value)/draft.steps*100)}))} placeholder="Done" type="number" style={{flex:1}}/></div><div style={{display:'flex',gap:7}}><Btn onClick={save} style={{flex:1}}>Save</Btn><Btn onClick={()=>setEditing(null)} v="g">Cancel</Btn></div></Card>
+      ):(
+        <Card key={g.id}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+            <div style={{flex:1,marginRight:10}}><div style={{fontSize:14,fontWeight:700,color:TX,marginBottom:4}}>{g.title}</div><Pill color={PCOL[g.pillar]||A}>{g.pillar}</Pill></div>
+            <div style={{textAlign:'right',flexShrink:0}}><div style={{fontSize:24,fontWeight:900,color:g.progress>=70?A:g.progress>=40?'#ffd166':'#ff6b6b'}}>{g.progress}%</div>{g.by&&<div style={{fontSize:10,color:DIM}}>due {new Date(g.by+'T00:00:00').toLocaleDateString('en-PH',{month:'short',day:'numeric'})}</div>}</div>
+          </div>
+          <div style={{background:MU,borderRadius:99,height:5,overflow:'hidden',marginBottom:9}}><div style={{width:`${g.progress}%`,height:'100%',background:g.progress>=70?A:g.progress>=40?'#ffd166':'#ff6b6b',borderRadius:99}}/></div>
+          <div style={{display:'flex',gap:5,flexWrap:'wrap',marginBottom:10}}>{Array.from({length:g.steps}).map((_,i)=><div key={i} onClick={()=>stepTap(g.id,i)} style={{width:26,height:26,borderRadius:7,background:i<g.doneSteps?A+'20':'#ffffff07',border:`1.5px solid ${i<g.doneSteps?A:MU}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:i<g.doneSteps?A:MU}}>{i<g.doneSteps?'✓':i+1}</div>)}</div>
+          <div style={{display:'flex',gap:7}}><Btn onClick={()=>se(g)} v="i" style={{fontSize:11}}>✏️ Edit</Btn><Btn onClick={()=>del(g.id)} v="d" style={{fontSize:11}}>✕ Delete</Btn></div>
+        </Card>
+      ))}
+      {arr.length===0&&<Card style={{textAlign:'center',color:DIM,fontSize:13,padding:28}}>No goals yet 🎯</Card>}
+    </div>
+  );
+}
+
+// ══ KANBAN ══
+const COLS=['Todo','In Progress','Done'];const COL_CLR={'Todo':DIM,'In Progress':'#ffd166','Done':A};
+const DEF_KANBAN=[{id:1,title:'Research competitors',col:'Done',proj:'Freelance Rebrand',pri:'med'},{id:2,title:'Design homepage',col:'In Progress',proj:'Freelance Rebrand',pri:'high'},{id:3,title:'Client review',col:'Todo',proj:'Freelance Rebrand',pri:'high'},{id:4,title:'Set up LinkedIn',col:'Todo',proj:'Personal Brand',pri:'med'}];
+function Kanban() {
+  const [cards,setCards]=useDb('kanban',DEF_KANBAN);
+  const [adding,setAdding]=useState(false);const [newK,setNewK]=useState({title:'',col:'Todo',proj:'',pri:'med'});const [fp,setFp]=useState('All');
+  const arr=cards||[];
+  const projs=['All',...new Set(arr.map(c=>c.proj).filter(Boolean))];
+  const visible=fp==='All'?arr:arr.filter(c=>c.proj===fp);
+  const move=(id,dir)=>setCards(c=>(c||[]).map(x=>{if(x.id!==id)return x;const idx=COLS.indexOf(x.col);return{...x,col:COLS[Math.min(COLS.length-1,Math.max(0,idx+dir))]};}));
+  const del=id=>setCards(c=>(c||[]).filter(x=>x.id!==id));
+  const add=()=>{if(!newK.title.trim())return;setCards(c=>[...(c||[]),{...newK,id:Date.now()}]);setNewK({title:'',col:'Todo',proj:newK.proj,pri:'med'});setAdding(false);};
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:14}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><SL mb={0}>Kanban Board</SL><Btn onClick={()=>setAdding(a=>!a)} v="g" style={{fontSize:11,padding:'5px 11px'}}>+ Add card</Btn></div>
+      <div style={{display:'flex',gap:6,overflowX:'auto'}}>{projs.map(p=><button key={p} onClick={()=>setFp(p)} style={{padding:'5px 12px',borderRadius:99,border:'none',background:fp===p?A:'#ffffff0a',color:fp===p?'#000':DIM,fontWeight:fp===p?800:500,fontSize:11,whiteSpace:'nowrap'}}>{p}</button>)}</div>
+      {adding&&<Card style={{borderColor:A+'30',display:'flex',flexDirection:'column',gap:8}}><SL>New Card</SL><TInput value={newK.title} onChange={e=>setNewK(k=>({...k,title:e.target.value}))} placeholder="Card title"/><div style={{display:'flex',gap:7}}><TSelect value={newK.col} onChange={e=>setNewK(k=>({...k,col:e.target.value}))} options={COLS} style={{flex:1}}/><TSelect value={newK.pri} onChange={e=>setNewK(k=>({...k,pri:e.target.value}))} options={['high','med','low']} style={{width:90}}/></div><TInput value={newK.proj} onChange={e=>setNewK(k=>({...k,proj:e.target.value}))} placeholder="Project (optional)"/><div style={{display:'flex',gap:7}}><Btn onClick={add} style={{flex:1}}>+ Add Card</Btn><Btn onClick={()=>setAdding(false)} v="g">Cancel</Btn></div></Card>}
+      {COLS.map(col=>{const cc=visible.filter(c=>c.col===col);return(
+        <div key={col}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><div style={{width:8,height:8,borderRadius:'50%',background:COL_CLR[col],flexShrink:0}}/><span style={{fontSize:11,fontWeight:700,color:COL_CLR[col],letterSpacing:1,textTransform:'uppercase'}}>{col}</span><span style={{fontSize:11,color:DIM}}>({cc.length})</span></div>
+          <div style={{display:'flex',flexDirection:'column',gap:7}}>
+            {cc.length===0&&<div style={{padding:'12px 14px',borderRadius:10,border:`1px dashed ${MU}`,textAlign:'center',color:DIM,fontSize:12}}>Empty</div>}
+            {cc.map(c=><div key={c.id} style={{padding:'11px 14px',borderRadius:11,background:PL,border:`1px solid #ffffff0a`,borderLeft:`3px solid ${COL_CLR[c.col]}`}}>
+              <div style={{display:'flex',alignItems:'flex-start',gap:8}}>
+                <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600,color:TX,marginBottom:4}}>{c.title}</div><div style={{display:'flex',gap:6}}>{c.proj&&<Pill color={DIM}>{c.proj}</Pill>}<Pill color={PRICOL[c.pri]}>{c.pri}</Pill></div></div>
+                <div style={{display:'flex',gap:5,flexShrink:0}}>
+                  {COLS.indexOf(c.col)>0&&<button onClick={()=>move(c.id,-1)} style={{background:'#ffffff08',border:'none',borderRadius:5,padding:'3px 7px',color:DIM,fontSize:11}}>←</button>}
+                  {COLS.indexOf(c.col)<COLS.length-1&&<button onClick={()=>move(c.id,1)} style={{background:A+'20',border:'none',borderRadius:5,padding:'3px 7px',color:A,fontSize:11}}>→</button>}
+                  <Btn onClick={()=>del(c.id)} v="d" style={{padding:'3px 7px'}}>✕</Btn>
+                </div>
+              </div>
+            </div>)}
+          </div>
+        </div>
+      );})}
+    </div>
+  );
+}
+
+// ══ PROJECTS ══
+const DEF_PROJ=[{id:1,name:'Freelance Website Rebrand',status:'Active',total:12,done:0,color:A},{id:2,name:'Personal Brand Setup',status:'Active',total:8,done:0,color:'#74b9ff'},{id:3,name:'Reading List 2026',status:'Active',total:6,done:0,color:'#a29bfe'}];
+const PCOLORS=[A,'#74b9ff','#ffd166','#a29bfe','#ff6b6b','#f7a8d8','#06d6a0'];
+function Projects() {
+  const [projects,setProjects]=useDb('projects',DEF_PROJ);
+  const [editing,setEditing]=useState(null);const [adding,setAdding]=useState(false);const [draft,setDraft]=useState({});const [newP,setNewP]=useState({name:'',status:'Active',total:5,done:0,color:A});
+  const arr=projects||[];
+  const se=p=>{setDraft({...p});setEditing(p.id);};
+  const save=()=>{setProjects(p=>(p||[]).map(x=>x.id===editing?{...draft,id:editing,total:Number(draft.total),done:Number(draft.done)}:x));setEditing(null);};
+  const del=id=>setProjects(p=>(p||[]).filter(x=>x.id!==id));
+  const add=()=>{if(!newP.name.trim())return;setProjects(p=>[...(p||[]),{...newP,id:Date.now(),total:Number(newP.total),done:Number(newP.done)}]);setNewP({name:'',status:'Active',total:5,done:0,color:A});setAdding(false);};
+  const bump=(id,dir)=>setProjects(p=>(p||[]).map(x=>x.id!==id?x:{...x,done:Math.min(x.total,Math.max(0,x.done+dir))}));
+  const CP=({value,onChange})=><div style={{display:'flex',gap:6}}>{PCOLORS.map(c=><div key={c} onClick={()=>onChange(c)} style={{width:24,height:24,borderRadius:6,background:c,border:`2px solid ${value===c?'#fff':'transparent'}`}}/>)}</div>;
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:12}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><SL mb={0}>Projects</SL><Btn onClick={()=>setAdding(a=>!a)} v="g" style={{fontSize:11,padding:'5px 11px'}}>+ Add project</Btn></div>
+      {adding&&<Card style={{borderColor:A+'30',display:'flex',flexDirection:'column',gap:8}}><SL>New Project</SL><TInput value={newP.name} onChange={e=>setNewP(p=>({...p,name:e.target.value}))} placeholder="Project name"/><div style={{display:'flex',gap:7}}><TSelect value={newP.status} onChange={e=>setNewP(p=>({...p,status:e.target.value}))} options={STATUSES} style={{flex:1}}/><TInput value={newP.total} onChange={e=>setNewP(p=>({...p,total:e.target.value}))} placeholder="Total tasks" type="number" style={{width:100}}/></div><CP value={newP.color} onChange={c=>setNewP(p=>({...p,color:c}))}/><div style={{display:'flex',gap:7}}><Btn onClick={add} style={{flex:1}}>+ Add</Btn><Btn onClick={()=>setAdding(false)} v="g">Cancel</Btn></div></Card>}
+      {arr.map(p=>{const pct=p.total?Math.round(p.done/p.total*100):0;return editing===p.id?(
+        <Card key={p.id} style={{borderColor:A+'30',display:'flex',flexDirection:'column',gap:8}}><SL>Edit Project</SL><TInput value={draft.name} onChange={e=>setDraft(d=>({...d,name:e.target.value}))} placeholder="Project name"/><div style={{display:'flex',gap:7}}><TSelect value={draft.status} onChange={e=>setDraft(d=>({...d,status:e.target.value}))} options={STATUSES} style={{flex:1}}/><TInput value={draft.total} onChange={e=>setDraft(d=>({...d,total:e.target.value}))} type="number" style={{width:80}}/><TInput value={draft.done} onChange={e=>setDraft(d=>({...d,done:e.target.value}))} type="number" style={{width:80}}/></div><CP value={draft.color} onChange={c=>setDraft(d=>({...d,color:c}))}/><div style={{display:'flex',gap:7}}><Btn onClick={save} style={{flex:1}}>Save</Btn><Btn onClick={()=>setEditing(null)} v="g">Cancel</Btn></div></Card>
+      ):(
+        <Card key={p.id} style={{borderLeft:`3px solid ${p.color}`}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:9}}><div style={{fontSize:14,fontWeight:700,color:TX}}>{p.name}</div><div style={{display:'flex',gap:6,alignItems:'center'}}><Pill color={p.status==='Active'?A:p.status==='Paused'?'#ffd166':DIM}>{p.status}</Pill><Btn onClick={()=>se(p)} v="i" style={{fontSize:11,padding:'3px 7px'}}>✏️</Btn><Btn onClick={()=>del(p.id)} v="d" style={{fontSize:11,padding:'3px 7px'}}>✕</Btn></div></div>
+          <div style={{display:'flex',alignItems:'center',gap:10}}><div style={{flex:1,background:MU,borderRadius:99,height:5,overflow:'hidden'}}><div style={{width:`${pct}%`,height:'100%',background:p.color,borderRadius:99}}/></div><span style={{fontSize:13,fontWeight:700,color:p.color}}>{pct}%</span><span style={{fontSize:11,color:DIM}}>{p.done}/{p.total}</span><button onClick={()=>bump(p.id,-1)} style={{background:'#ffffff08',border:'none',borderRadius:5,width:22,height:22,color:DIM,fontSize:13}}>−</button><button onClick={()=>bump(p.id,1)} style={{background:A+'20',border:'none',borderRadius:5,width:22,height:22,color:A,fontSize:13}}>+</button></div>
+        </Card>
+      );})}
+      {arr.length===0&&<Card style={{textAlign:'center',color:DIM,fontSize:13,padding:28}}>No projects 🗂</Card>}
+    </div>
+  );
+}
+
+// ══ JOURNAL ══
+const DEF_JOUR=[{id:1,date:'May 18',title:'First entry',mood:4,text:'Started using my Life OS today. Excited to build this habit.'}];
+const MOOD_C=['','#ff6b6b','#ffd166','#fdcb6e',A,A];
+const moodE=v=>['','😞','😕','😐','🙂','😄'][v];
+function Journal() {
+  const [entries,setEntries]=useDb('journal',DEF_JOUR);
+  const [adding,setAdding]=useState(false);const [expanded,setExpanded]=useState(null);const [newE,setNewE]=useState({title:'',mood:4,text:''});
+  const todayStr=new Date().toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  const arr=entries||[];
+  const del=id=>setEntries(e=>(e||[]).filter(x=>x.id!==id));
+  const add=()=>{if(!newE.title.trim())return;setEntries(e=>[{...newE,id:Date.now(),date:todayStr},...(e||[])]);setNewE({title:'',mood:4,text:''});setAdding(false);};
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:12}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><SL mb={0}>Journal</SL><Btn onClick={()=>setAdding(a=>!a)} v="g" style={{fontSize:11,padding:'5px 11px'}}>+ New entry</Btn></div>
+      {adding&&<Card style={{borderColor:A+'30',display:'flex',flexDirection:'column',gap:8}}><SL>Today's Entry</SL><TInput value={newE.title} onChange={e=>setNewE(n=>({...n,title:e.target.value}))} placeholder="Entry title"/><div><div style={{fontSize:11,color:DIM,marginBottom:7}}>Mood: {moodE(newE.mood)}</div><input type="range" min={1} max={5} value={newE.mood} onChange={e=>setNewE(n=>({...n,mood:Number(e.target.value)}))} style={{width:'100%',accentColor:A}}/></div><TArea value={newE.text} onChange={e=>setNewE(n=>({...n,text:e.target.value}))} placeholder="Write freely..."/><div style={{display:'flex',gap:7}}><Btn onClick={add} style={{flex:1}}>Save Entry</Btn><Btn onClick={()=>setAdding(false)} v="g">Cancel</Btn></div></Card>}
+      {arr.map(e=><Card key={e.id} style={{}} onClick={()=>setExpanded(x=>x===e.id?null:e.id)}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:7}}>
+          <div><div style={{fontSize:10,color:DIM,marginBottom:2}}>{e.date}</div><div style={{fontSize:14,fontWeight:700,color:TX}}>{e.title}</div></div>
+          <div style={{display:'flex',gap:7,alignItems:'center'}}><div style={{fontSize:22}}>{moodE(e.mood)}</div><Btn onClick={ev=>{ev.stopPropagation();del(e.id);}} v="d" style={{padding:'3px 7px'}}>✕</Btn></div>
+        </div>
+        <div style={{fontSize:13,color:DIM,lineHeight:1.6}}>{expanded===e.id?e.text:e.text.slice(0,80)+(e.text.length>80?'...':'')}</div>
+        <div style={{marginTop:8,height:3,background:MOOD_C[e.mood]+'35',borderRadius:99,overflow:'hidden'}}><div style={{width:`${e.mood/5*100}%`,height:'100%',background:MOOD_C[e.mood],borderRadius:99}}/></div>
+      </Card>)}
+      {arr.length===0&&<Card style={{textAlign:'center',color:DIM,fontSize:13,padding:28}}>No entries yet ✍️</Card>}
+    </div>
+  );
+}
+
+// ══ FINANCE ══
+const DEF_FIN={income:0,expenses:0,saved:0,savingsGoal:50000,breakdown:[{id:1,cat:'Rent & Bills',amt:0,color:'#ff6b6b'},{id:2,cat:'Food',amt:0,color:'#ffd166'},{id:3,cat:'Transport',amt:0,color:'#74b9ff'},{id:4,cat:'Self-care',amt:0,color:'#a29bfe'},{id:5,cat:'Misc',amt:0,color:MU}]};
+const DEF_TXN=[];
+const TXN_TYPES=['expense','income','savings'];const TXN_CATS=['Food','Transport','Rent','Self-care','Work','Freelance','Savings','Misc','Gifts','Health'];const TXN_CLR={expense:'#ff6b6b',income:A,savings:'#74b9ff'};const CAT_COLORS=[A,'#ff6b6b','#ffd166','#74b9ff','#a29bfe','#f7a8d8',MU];
+function Finance() {
+  const [fin,setFin]=useDb('finance',DEF_FIN);
+  const [txns,setTxns]=useDb('txns',DEF_TXN);
+  const [tab,setTab]=useState('overview');const [editTop,setEditTop]=useState(false);const [hd,setHd]=useState({});const [addCat,setAddCat]=useState(false);const [newC,setNewC]=useState({cat:'',amt:0,color:A});const [qOpen,setQOpen]=useState(false);const [newTxn,setNewTxn]=useState({type:'expense',amount:'',cat:'Food',note:'',date:TODAY});
+  const f=fin||DEF_FIN; const txArr=txns||[];
+  const catTotal=(f.breakdown||[]).reduce((s,b)=>s+Number(b.amt),0);
+  const thisMonth=new Date().toISOString().slice(0,7);const mTxns=txArr.filter(t=>t.date&&t.date.startsWith(thisMonth));
+  const txIn=mTxns.filter(t=>t.type==='income').reduce((s,t)=>s+Number(t.amount),0);
+  const txEx=mTxns.filter(t=>t.type==='expense').reduce((s,t)=>s+Number(t.amount),0);
+  const txSv=mTxns.filter(t=>t.type==='savings').reduce((s,t)=>s+Number(t.amount),0);
+  const addTxn=()=>{if(!newTxn.amount)return;const t={...newTxn,id:Date.now(),amount:Number(newTxn.amount)};setTxns(tx=>[t,...(tx||[])]);if(t.type==='income')setFin(fv=>({...fv,income:(fv.income||0)+t.amount}));if(t.type==='expense')setFin(fv=>({...fv,expenses:(fv.expenses||0)+t.amount}));if(t.type==='savings')setFin(fv=>({...fv,saved:(fv.saved||0)+t.amount}));setNewTxn({type:'expense',amount:'',cat:'Food',note:'',date:TODAY});setQOpen(false);};
+  const delTxn=id=>setTxns(tx=>(tx||[]).filter(x=>x.id!==id));
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:13}}>
+      <div style={{display:'flex',gap:6}}>{['overview','transactions'].map(t=><button key={t} onClick={()=>setTab(t)} style={{flex:1,padding:'8px 0',borderRadius:10,border:'none',background:tab===t?A:P2,color:tab===t?'#000':DIM,fontWeight:tab===t?800:500,fontSize:12,textTransform:'capitalize'}}>{t==='overview'?'📊 Overview':'📋 Transactions'}</button>)}</div>
+      {qOpen?(
+        <Card style={{borderColor:A+'40',display:'flex',flexDirection:'column',gap:8}}><SL>Quick Add</SL>
+          <div style={{display:'flex',gap:6}}>{TXN_TYPES.map(t=><button key={t} onClick={()=>setNewTxn(x=>({...x,type:t}))} style={{flex:1,padding:'7px 0',borderRadius:8,border:`1.5px solid ${newTxn.type===t?TXN_CLR[t]:MU}`,background:newTxn.type===t?TXN_CLR[t]+'18':'transparent',color:newTxn.type===t?TXN_CLR[t]:DIM,fontWeight:700,fontSize:11,textTransform:'capitalize'}}>{t}</button>)}</div>
+          <div style={{display:'flex',gap:7}}><div style={{display:'flex',alignItems:'center',gap:5,background:P2,borderRadius:8,padding:'8px 11px',flex:1,border:'1px solid #ffffff14'}}><span style={{color:DIM,fontSize:12}}>₱</span><input value={newTxn.amount} onChange={e=>setNewTxn(x=>({...x,amount:e.target.value}))} placeholder="0" type="number" style={{background:'transparent',border:'none',outline:'none',color:TX,fontSize:16,fontWeight:900,width:'100%'}}/></div><TSelect value={newTxn.cat} onChange={e=>setNewTxn(x=>({...x,cat:e.target.value}))} options={TXN_CATS} style={{flex:1}}/></div>
+          <TInput value={newTxn.note} onChange={e=>setNewTxn(x=>({...x,note:e.target.value}))} placeholder="Note (optional)" onKeyDown={e=>e.key==='Enter'&&addTxn()}/>
+          <TInput value={newTxn.date} onChange={e=>setNewTxn(x=>({...x,date:e.target.value}))} type="date"/>
+          <div style={{display:'flex',gap:7}}><Btn onClick={addTxn} style={{flex:1}}>+ Add</Btn><Btn onClick={()=>setQOpen(false)} v="g">Cancel</Btn></div>
+        </Card>
+      ):<Btn onClick={()=>setQOpen(true)} style={{width:'100%',padding:12,fontSize:13}}>+ Add Income / Expense / Savings</Btn>}
+      {tab==='overview'&&<>
+        <div style={{display:'flex',justifyContent:'flex-end'}}><Btn onClick={()=>{setHd({income:f.income,expenses:f.expenses,saved:f.saved,savingsGoal:f.savingsGoal});setEditTop(true);}} v="g" style={{fontSize:11,padding:'5px 11px'}}>Edit base amounts</Btn></div>
+        {editTop&&<Card style={{borderColor:A+'30',display:'flex',flexDirection:'column',gap:8}}><SL>Edit Numbers</SL>{[['Income ₱','income'],['Expenses ₱','expenses'],['Saved ₱','saved'],['Goal ₱','savingsGoal']].map(([l,k])=><div key={k} style={{display:'flex',alignItems:'center',gap:9}}><span style={{fontSize:12,color:DIM,width:100,flexShrink:0}}>{l}</span><TInput value={hd[k]} onChange={e=>setHd(d=>({...d,[k]:Number(e.target.value)}))} type="number"/></div>)}<div style={{display:'flex',gap:7}}><Btn onClick={()=>{setFin(fv=>({...fv,...hd}));setEditTop(false);}} style={{flex:1}}>Save</Btn><Btn onClick={()=>setEditTop(false)} v="g">Cancel</Btn></div></Card>}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>{[['Income',`₱${Number(f.income||0).toLocaleString()}`,A],['Expenses',`₱${Number(f.expenses||0).toLocaleString()}`,'#ff6b6b'],['Saved',`₱${Number(f.saved||0).toLocaleString()}`,'#74b9ff'],['Rate',`${f.income?Math.round((f.saved||0)/f.income*100):0}%`,'#ffd166']].map(([l,v,c])=><Card key={l} style={{textAlign:'center'}}><div style={{fontSize:10,color:DIM,marginBottom:4}}>{l}</div><div style={{fontSize:21,fontWeight:900,color:c}}>{v}</div></Card>)}</div>
+        <Card><SL>Savings Goal</SL><div style={{display:'flex',justifyContent:'space-between',marginBottom:7}}><span style={{fontSize:13,color:TX}}>₱{Number(f.saved||0).toLocaleString()} / ₱{Number(f.savingsGoal||0).toLocaleString()}</span><span style={{fontSize:13,fontWeight:800,color:A}}>{f.savingsGoal?Math.min(100,Math.round((f.saved||0)/f.savingsGoal*100)):0}%</span></div><div style={{background:MU,borderRadius:99,height:7,overflow:'hidden'}}><div style={{width:`${f.savingsGoal?Math.min(100,Math.round((f.saved||0)/f.savingsGoal*100)):0}%`,height:'100%',background:A,borderRadius:99}}/></div></Card>
+        <Card>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}><SL mb={0}>Spending</SL><Btn onClick={()=>setAddCat(a=>!a)} v="g" style={{fontSize:11,padding:'4px 10px'}}>+ Add</Btn></div>
+          {addCat&&<div style={{display:'flex',flexDirection:'column',gap:7,marginBottom:12,padding:11,background:P2,borderRadius:10,border:`1px solid ${A}25`}}><div style={{display:'flex',gap:7}}><TInput value={newC.cat} onChange={e=>setNewC(c=>({...c,cat:e.target.value}))} placeholder="Category" style={{flex:1}}/><TInput value={newC.amt} onChange={e=>setNewC(c=>({...c,amt:e.target.value}))} placeholder="₱" type="number" style={{width:80}}/></div><div style={{display:'flex',gap:6}}>{CAT_COLORS.map(c=><div key={c} onClick={()=>setNewC(n=>({...n,color:c}))} style={{width:22,height:22,borderRadius:5,background:c,border:`2px solid ${newC.color===c?'#fff':'transparent'}`}}/>)}</div><div style={{display:'flex',gap:7}}><Btn onClick={()=>{if(!newC.cat.trim())return;setFin(fv=>({...fv,breakdown:[...(fv.breakdown||[]),{...newC,id:Date.now(),amt:Number(newC.amt)}]}));setNewC({cat:'',amt:0,color:A});setAddCat(false);}} style={{flex:1}}>Add</Btn><Btn onClick={()=>setAddCat(false)} v="g">Cancel</Btn></div></div>}
+          {(f.breakdown||[]).map(b=><div key={b.id} style={{display:'flex',alignItems:'center',gap:10,marginBottom:9}}><div style={{width:9,height:9,borderRadius:'50%',background:b.color,flexShrink:0}}/><input value={b.cat} onChange={e=>setFin(fv=>({...fv,breakdown:(fv.breakdown||[]).map(x=>x.id===b.id?{...x,cat:e.target.value}:x)}))} style={{flex:1,background:'transparent',border:'none',outline:'none',color:TX,fontSize:13}}/><span style={{fontSize:11,color:DIM}}>₱</span><input value={b.amt} onChange={e=>setFin(fv=>({...fv,breakdown:(fv.breakdown||[]).map(x=>x.id===b.id?{...x,amt:Number(e.target.value)}:x)}))} type="number" style={{width:70,background:'transparent',border:'none',outline:'none',color:TX,fontSize:13,textAlign:'right'}}/><div style={{width:50,background:MU,borderRadius:99,height:4,overflow:'hidden'}}><div style={{width:`${catTotal?Math.round(b.amt/catTotal*100):0}%`,height:'100%',background:b.color,borderRadius:99}}/></div><Btn onClick={()=>setFin(fv=>({...fv,breakdown:(fv.breakdown||[]).filter(x=>x.id!==b.id)}))} v="d" style={{padding:'3px 7px'}}>✕</Btn></div>)}
+          <div style={{borderTop:'1px solid #ffffff08',paddingTop:9,display:'flex',justifyContent:'space-between'}}><span style={{fontSize:12,color:DIM}}>Total tracked</span><span style={{fontSize:13,fontWeight:700,color:TX}}>₱{catTotal.toLocaleString()}</span></div>
+        </Card>
+      </>}
+      {tab==='transactions'&&<>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>{[['In',`₱${txIn.toLocaleString()}`,A],['Out',`₱${txEx.toLocaleString()}`,'#ff6b6b'],['Saved',`₱${txSv.toLocaleString()}`,'#74b9ff']].map(([l,v,c])=><Card key={l} style={{textAlign:'center',padding:'11px 10px'}}><div style={{fontSize:9,color:DIM,marginBottom:3}}>{l} this month</div><div style={{fontSize:16,fontWeight:900,color:c}}>{v}</div></Card>)}</div>
+        <SL>All Transactions</SL>
+        {txArr.length===0&&<Card style={{textAlign:'center',color:DIM,fontSize:13,padding:24}}>No transactions yet — use button above</Card>}
+        <div style={{display:'flex',flexDirection:'column',gap:7}}>{txArr.map(t=><div key={t.id} style={{display:'flex',alignItems:'center',gap:11,padding:'11px 14px',borderRadius:12,background:PL,border:`1px solid ${TXN_CLR[t.type]||DIM}20`,borderLeft:`3px solid ${TXN_CLR[t.type]||DIM}`}}><div style={{flex:1}}><div style={{display:'flex',alignItems:'center',gap:7,marginBottom:2}}><span style={{fontSize:13,fontWeight:700,color:TX}}>{t.note||t.cat}</span><Pill color={TXN_CLR[t.type]||DIM}>{t.type}</Pill></div><div style={{fontSize:11,color:DIM}}>{t.date}</div></div><div style={{fontSize:16,fontWeight:900,color:TXN_CLR[t.type]||DIM,flexShrink:0}}>{t.type==='expense'?'-':'+'} ₱{Number(t.amount).toLocaleString()}</div><Btn onClick={()=>delTxn(t.id)} v="d" style={{padding:'3px 7px'}}>✕</Btn></div>)}</div>
+      </>}
+    </div>
+  );
+}
+
+// ══ SKILLS ══
+const SL_LEVELS=['Beginner','Learning','Intermediate','Advanced','Expert'];const SL_CLR=['#ff6b6b','#ffd166','#74b9ff',A,'#a29bfe'];
+const DEF_SKILLS=[{id:1,name:'UI/UX Design',cat:'Design',level:1,note:'',learning:true},{id:2,name:'Figma',cat:'Design',level:1,note:'',learning:false},{id:3,name:'Copywriting',cat:'Marketing',level:1,note:'',learning:false}];
+const SKILL_CATS=['Design','Code','Marketing','Money','Soft','Health','Creative','Other'];
+function Skills() {
+  const [skills,setSkills]=useDb('skills',DEF_SKILLS);
+  const [adding,setAdding]=useState(false);const [editing,setEditing]=useState(null);const [draft,setDraft]=useState({});const [newS,setNewS]=useState({name:'',cat:'Design',level:1,note:'',learning:false});
+  const arr=skills||[];const cats=[...new Set(arr.map(s=>s.cat))];
+  const se=s=>{setDraft({...s});setEditing(s.id);};
+  const save=()=>{setSkills(s=>(s||[]).map(x=>x.id===editing?{...draft,id:editing}:x));setEditing(null);};
+  const del=id=>setSkills(s=>(s||[]).filter(x=>x.id!==id));
+  const add=()=>{if(!newS.name.trim())return;setSkills(s=>[...(s||[]),{...newS,id:Date.now(),level:Number(newS.level)}]);setNewS({name:'',cat:'Design',level:1,note:'',learning:false});setAdding(false);};
+  const bump=(id,dir)=>setSkills(s=>(s||[]).map(x=>x.id!==id?x:{...x,level:Math.min(5,Math.max(1,x.level+dir))}));
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:14}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><SL mb={0}>Skills Matrix</SL><Btn onClick={()=>setAdding(a=>!a)} v="g" style={{fontSize:11,padding:'5px 11px'}}>+ Add skill</Btn></div>
+      {adding&&<Card style={{borderColor:A+'30',display:'flex',flexDirection:'column',gap:8}}><SL>New Skill</SL><TInput value={newS.name} onChange={e=>setNewS(s=>({...s,name:e.target.value}))} placeholder="Skill name"/><div style={{display:'flex',gap:7}}><TSelect value={newS.cat} onChange={e=>setNewS(s=>({...s,cat:e.target.value}))} options={SKILL_CATS} style={{flex:1}}/><TSelect value={newS.level} onChange={e=>setNewS(s=>({...s,level:Number(e.target.value)}))} options={[1,2,3,4,5]} style={{width:80}}/></div><TInput value={newS.note} onChange={e=>setNewS(s=>({...s,note:e.target.value}))} placeholder="Note / plan"/><div style={{display:'flex',alignItems:'center',gap:8}}><input type="checkbox" checked={newS.learning} onChange={e=>setNewS(s=>({...s,learning:e.target.checked}))} id="lrn" style={{accentColor:A}}/><label htmlFor="lrn" style={{fontSize:12,color:DIM}}>Currently learning</label></div><div style={{display:'flex',gap:7}}><Btn onClick={add} style={{flex:1}}>+ Add</Btn><Btn onClick={()=>setAdding(false)} v="g">Cancel</Btn></div></Card>}
+      {cats.map(cat=><div key={cat}><SL>{cat}</SL><div style={{display:'flex',flexDirection:'column',gap:8}}>{arr.filter(s=>s.cat===cat).map(s=>editing===s.id?(
+        <Card key={s.id} style={{borderColor:A+'30',display:'flex',flexDirection:'column',gap:8}}><TInput value={draft.name} onChange={e=>setDraft(d=>({...d,name:e.target.value}))} placeholder="Skill name"/><div style={{display:'flex',gap:7}}><TSelect value={draft.cat} onChange={e=>setDraft(d=>({...d,cat:e.target.value}))} options={SKILL_CATS} style={{flex:1}}/><TSelect value={draft.level} onChange={e=>setDraft(d=>({...d,level:Number(e.target.value)}))} options={[1,2,3,4,5]} style={{width:80}}/></div><TInput value={draft.note} onChange={e=>setDraft(d=>({...d,note:e.target.value}))} placeholder="Note"/><div style={{display:'flex',alignItems:'center',gap:8}}><input type="checkbox" checked={draft.learning} onChange={e=>setDraft(d=>({...d,learning:e.target.checked}))} style={{accentColor:A}}/><span style={{fontSize:12,color:DIM}}>Currently learning</span></div><div style={{display:'flex',gap:7}}><Btn onClick={save} style={{flex:1}}>Save</Btn><Btn onClick={()=>setEditing(null)} v="g">Cancel</Btn></div></Card>
+      ):(
+        <Card key={s.id} style={{borderLeft:`3px solid ${SL_CLR[s.level-1]}60`}}>
+          <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
+            <div style={{flex:1}}><div style={{display:'flex',alignItems:'center',gap:7,marginBottom:4}}><span style={{fontSize:13,fontWeight:700,color:TX}}>{s.name}</span>{s.learning&&<Pill color={A}>learning</Pill>}</div><div style={{display:'flex',gap:5,marginBottom:6}}>{[1,2,3,4,5].map(i=><div key={i} style={{width:28,height:8,borderRadius:4,background:i<=s.level?SL_CLR[s.level-1]:MU}}/>)}<span style={{fontSize:11,color:SL_CLR[s.level-1],fontWeight:700,marginLeft:4}}>{SL_LEVELS[s.level-1]}</span></div>{s.note&&<div style={{fontSize:11,color:DIM}}>{s.note}</div>}</div>
+            <div style={{display:'flex',flexDirection:'column',gap:5,flexShrink:0}}><div style={{display:'flex',gap:5}}><button onClick={()=>bump(s.id,-1)} style={{background:'#ffffff08',border:'none',borderRadius:5,width:24,height:24,color:DIM,fontSize:13}}>−</button><button onClick={()=>bump(s.id,1)} style={{background:SL_CLR[s.level-1]+'20',border:'none',borderRadius:5,width:24,height:24,color:SL_CLR[s.level-1],fontSize:13}}>+</button></div><div style={{display:'flex',gap:5}}><Btn onClick={()=>se(s)} v="i" style={{fontSize:10,padding:'3px 7px'}}>✏️</Btn><Btn onClick={()=>del(s.id)} v="d" style={{fontSize:10,padding:'3px 7px'}}>✕</Btn></div></div>
+          </div>
+        </Card>
+      ))}</div></div>)}
+      {arr.length===0&&<Card style={{textAlign:'center',color:DIM,fontSize:13,padding:28}}>No skills yet 💪</Card>}
+    </div>
+  );
+}
+
+// ══ PEOPLE ══
+const DEF_PEOPLE=[{id:1,name:'GF 💌',type:'Partner',lastTouched:'Today',note:'Anniversary planning in progress',birthday:'1999-08-14',phone:'',email:'',tasks:['Plan anniversary','Send good morning text']},{id:2,name:'Mom',type:'Family',lastTouched:'Today',note:'Need to call this week',birthday:'1970-03-22',phone:'',email:'',tasks:['Call this week']},{id:3,name:'Trisha',type:'Friend',lastTouched:'Today',note:'Check in on her thesis',birthday:'2000-11-05',phone:'',email:'',tasks:[]},{id:4,name:'Mark',type:'Mentor',lastTouched:'Today',note:'Schedule coffee meeting',birthday:'1985-07-30',phone:'',email:'',tasks:['Schedule coffee']}];
+function PersonCard({person,onChange,onRemove}) {
+  const [open,setOpen]=useState(false);const [ed,setEd]=useState(false);const [draft,setDraft]=useState(person);const [nt,setNt]=useState('');
+  const col=TCOL[person.type]||DIM;
+  const save=()=>{onChange(draft);setEd(false);};
+  const addTask=()=>{if(!nt.trim())return;onChange({...person,tasks:[...(person.tasks||[]),nt.trim()]});setNt('');};
+  const delTask=i=>onChange({...person,tasks:(person.tasks||[]).filter((_,idx)=>idx!==i)});
+  return(
+    <Card style={{borderLeft:`3px solid ${col}40`}}>
+      <div style={{display:'flex',alignItems:'center',gap:11}}>
+        <div style={{width:40,height:40,borderRadius:10,flexShrink:0,background:col+'20',border:`2px solid ${col}40`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:17,fontWeight:700,color:col}}>{person.name[0]||'?'}</div>
+        <div style={{flex:1,minWidth:0}}><div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap'}}><span style={{fontSize:14,fontWeight:700,color:TX}}>{person.name}</span><Pill color={col}>{person.type}</Pill></div><div style={{fontSize:11,color:DIM,marginTop:2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{person.note||'No note'}</div></div>
+        <div style={{textAlign:'right',flexShrink:0}}><div style={{fontSize:10,color:DIM}}>last touch</div><div style={{fontSize:12,fontWeight:700,color:person.lastTouched==='Today'?A:TX}}>{person.lastTouched}</div></div>
+        <button onClick={()=>setOpen(o=>!o)} style={{background:'#ffffff08',border:'none',borderRadius:6,padding:'4px 8px',color:DIM,fontSize:12}}>{open?'▲':'▼'}</button>
+      </div>
+      {open&&<div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #ffffff08'}}>
+        {ed?(<div style={{display:'flex',flexDirection:'column',gap:7}}>
+          <div style={{display:'flex',gap:7}}><TInput value={draft.name} onChange={e=>setDraft(d=>({...d,name:e.target.value}))} placeholder="Name" style={{flex:1}}/><TSelect value={draft.type} onChange={e=>setDraft(d=>({...d,type:e.target.value}))} options={Object.keys(TCOL)} style={{width:110}}/></div>
+          <TSelect value={draft.lastTouched} onChange={e=>setDraft(d=>({...d,lastTouched:e.target.value}))} options={TOUCH}/>
+          <TInput value={draft.note} onChange={e=>setDraft(d=>({...d,note:e.target.value}))} placeholder="Note"/>
+          <TInput value={draft.birthday} onChange={e=>setDraft(d=>({...d,birthday:e.target.value}))} type="date"/>
+          <TInput value={draft.phone} onChange={e=>setDraft(d=>({...d,phone:e.target.value}))} placeholder="Phone"/>
+          <TInput value={draft.email} onChange={e=>setDraft(d=>({...d,email:e.target.value}))} placeholder="Email"/>
+          <div style={{display:'flex',gap:7}}><Btn onClick={save} style={{flex:1}}>Save</Btn><Btn onClick={()=>setEd(false)} v="g">Cancel</Btn></div>
+        </div>):(<div style={{display:'flex',flexDirection:'column',gap:9}}>
+          <div style={{display:'flex',flexDirection:'column',gap:5}}>
+            {person.birthday&&<div style={{display:'flex',gap:8,fontSize:12}}><span>🎂</span><span style={{color:TX}}>{new Date(person.birthday+'T00:00:00').toLocaleDateString('en-PH',{month:'long',day:'numeric',year:'numeric'})}</span></div>}
+            {person.phone&&<div style={{display:'flex',gap:8,fontSize:12}}><span>📞</span><span style={{color:TX}}>{person.phone}</span></div>}
+            {person.email&&<div style={{display:'flex',gap:8,fontSize:12}}><span>✉️</span><span style={{color:TX}}>{person.email}</span></div>}
+          </div>
+          <div><div style={{fontSize:10,color:DIM,letterSpacing:2,textTransform:'uppercase',marginBottom:7,fontWeight:600}}>Tasks</div>
+            {(person.tasks||[]).map((t,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',background:P2,borderRadius:7,marginBottom:5}}><span style={{flex:1,fontSize:12,color:TX}}>{t}</span><Btn onClick={()=>delTask(i)} v="d" style={{padding:'2px 7px'}}>×</Btn></div>)}
+            <div style={{display:'flex',gap:7,marginTop:5}}><TInput value={nt} onChange={e=>setNt(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addTask()} placeholder="Add a task..." style={{flex:1}}/><Btn onClick={addTask} style={{padding:'8px 11px'}}>+</Btn></div>
+          </div>
+          <div style={{display:'flex',gap:7,flexWrap:'wrap'}}>
+            <Btn onClick={()=>onChange({...person,lastTouched:'Today'})} v="g" style={{fontSize:11}}>✓ Touched today</Btn>
+            <Btn onClick={()=>{setDraft(person);setEd(true);}} v="g" style={{fontSize:11}}>✏️ Edit</Btn>
+            <Btn onClick={onRemove} v="d" style={{fontSize:11}}>Remove</Btn>
+          </div>
+        </div>)}
+      </div>}
+    </Card>
+  );
+}
+function People() {
+  const [people,setPeople]=useDb('people',DEF_PEOPLE);
+  const [bdays,setBdays]=useDb('bdays',[]);
+  const [view,setView]=useState('contacts');const [addOpen,setAddOpen]=useState(false);const [newP,setNewP]=useState({name:'',type:'Friend',lastTouched:'Today',note:'',birthday:'',phone:'',email:'',tasks:[]});
+  const [addBday,setAddBday]=useState(false);const [editBId,setEditBId]=useState(null);const [newBday,setNewBday]=useState({name:'',birthday:'',type:'Friend'});const [bdraft,setBdraft]=useState({});
+  const pArr=people||[];const bArr=bdays||[];
+  const update=(id,u)=>setPeople(p=>(p||[]).map(x=>x.id===id?{...u,id}:x));
+  const remove=id=>setPeople(p=>(p||[]).filter(x=>x.id!==id));
+  const addPerson=()=>{if(!newP.name.trim())return;setPeople(p=>[...(p||[]),{...newP,id:Date.now(),tasks:[]}]);setNewP({name:'',type:'Friend',lastTouched:'Today',note:'',birthday:'',phone:'',email:'',tasks:[]});setAddOpen(false);};
+  const saveBday=()=>{setBdays(b=>(b||[]).map(x=>x.id===editBId?{...bdraft,id:editBId}:x));setEditBId(null);};
+  const delBday=id=>setBdays(b=>(b||[]).filter(x=>x.id!==id));
+  const addBE=()=>{if(!newBday.name.trim()||!newBday.birthday)return;setBdays(b=>[...(b||[]),{...newBday,id:Date.now()}]);setNewBday({name:'',birthday:'',type:'Friend'});setAddBday(false);};
+  const today=new Date();
+  const allBdays=[...pArr.filter(p=>p.birthday).map(p=>({id:p.id,name:p.name,birthday:p.birthday,type:p.type,isContact:true})),...bArr.map(b=>({...b,isContact:false}))].map(p=>{const bd=new Date(p.birthday+'T00:00:00');const next=new Date(today.getFullYear(),bd.getMonth(),bd.getDate());if(next<today)next.setFullYear(today.getFullYear()+1);const days=Math.round((next-today)/86400000);const age=today.getFullYear()-bd.getFullYear()-(today<next?1:0);return{...p,days,age};}).sort((a,b)=>a.days-b.days);
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:12}}>
+      <div style={{display:'flex',gap:6}}>{['contacts','birthdays'].map(t=><button key={t} onClick={()=>setView(t)} style={{flex:1,padding:'8px 0',borderRadius:10,border:'none',background:view===t?A:P2,color:view===t?'#000':DIM,fontWeight:view===t?800:500,fontSize:12}}>{t==='contacts'?'👥 Contacts':'🎂 Birthdays'}</button>)}</div>
+      {view==='contacts'&&<>
+        <div style={{fontSize:10,color:DIM,letterSpacing:3,textTransform:'uppercase',marginBottom:4,fontWeight:600}}>{pArr.length} contacts · tap ▼ to expand</div>
+        {pArr.map(p=><PersonCard key={p.id} person={p} onChange={u=>update(p.id,u)} onRemove={()=>remove(p.id)}/>)}
+        {addOpen?<Card style={{borderColor:A+'30',display:'flex',flexDirection:'column',gap:7}}><SL>New Contact</SL><div style={{display:'flex',gap:7}}><TInput value={newP.name} onChange={e=>setNewP(p=>({...p,name:e.target.value}))} placeholder="Name" style={{flex:1}}/><TSelect value={newP.type} onChange={e=>setNewP(p=>({...p,type:e.target.value}))} options={Object.keys(TCOL)} style={{width:110}}/></div><TInput value={newP.birthday} onChange={e=>setNewP(p=>({...p,birthday:e.target.value}))} type="date"/><TInput value={newP.phone} onChange={e=>setNewP(p=>({...p,phone:e.target.value}))} placeholder="Phone"/><TInput value={newP.email} onChange={e=>setNewP(p=>({...p,email:e.target.value}))} placeholder="Email"/><TInput value={newP.note} onChange={e=>setNewP(p=>({...p,note:e.target.value}))} placeholder="Note"/><div style={{display:'flex',gap:7}}><Btn onClick={addPerson} style={{flex:1}}>+ Add Contact</Btn><Btn onClick={()=>setAddOpen(false)} v="g">Cancel</Btn></div></Card>:<DAdd onClick={()=>setAddOpen(true)} label="+ Add contact"/>}
+      </>}
+      {view==='birthdays'&&<>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><SL mb={0}>Upcoming Birthdays</SL><Btn onClick={()=>setAddBday(a=>!a)} v="g" style={{fontSize:11,padding:'5px 11px'}}>+ Add birthday</Btn></div>
+        {addBday&&<Card style={{borderColor:A+'30',display:'flex',flexDirection:'column',gap:8}}><SL>New Birthday</SL><TInput value={newBday.name} onChange={e=>setNewBday(b=>({...b,name:e.target.value}))} placeholder="Name"/><TInput value={newBday.birthday} onChange={e=>setNewBday(b=>({...b,birthday:e.target.value}))} type="date"/><TSelect value={newBday.type} onChange={e=>setNewBday(b=>({...b,type:e.target.value}))} options={Object.keys(TCOL)}/><div style={{display:'flex',gap:7}}><Btn onClick={addBE} style={{flex:1}}>+ Add</Btn><Btn onClick={()=>setAddBday(false)} v="g">Cancel</Btn></div></Card>}
+        {allBdays.length===0&&<Card style={{textAlign:'center',color:DIM,fontSize:13,padding:24}}>No birthdays yet 🎂</Card>}
+        {allBdays.map(p=>editBId===p.id&&!p.isContact?(
+          <Card key={p.id} style={{borderColor:A+'30',display:'flex',flexDirection:'column',gap:8}}><SL>Edit Birthday</SL><TInput value={bdraft.name} onChange={e=>setBdraft(d=>({...d,name:e.target.value}))} placeholder="Name"/><TInput value={bdraft.birthday} onChange={e=>setBdraft(d=>({...d,birthday:e.target.value}))} type="date"/><TSelect value={bdraft.type} onChange={e=>setBdraft(d=>({...d,type:e.target.value}))} options={Object.keys(TCOL)}/><div style={{display:'flex',gap:7}}><Btn onClick={saveBday} style={{flex:1}}>Save</Btn><Btn onClick={()=>setEditBId(null)} v="g">Cancel</Btn></div></Card>
+        ):(
+          <Card key={p.id} style={{display:'flex',alignItems:'center',gap:13,borderLeft:`3px solid ${TCOL[p.type]||DIM}`}}>
+            <div style={{textAlign:'center',minWidth:44}}><div style={{fontSize:21,fontWeight:900,color:p.days<=7?A:TX}}>{p.days}</div><div style={{fontSize:9,color:DIM,letterSpacing:1}}>DAYS</div></div>
+            <div style={{flex:1}}><div style={{display:'flex',alignItems:'center',gap:7,marginBottom:2,flexWrap:'wrap'}}><span style={{fontSize:14,fontWeight:700,color:TX}}>{p.name}</span>{p.days===0&&<span style={{fontSize:10,background:A+'20',color:A,padding:'2px 7px',borderRadius:99,fontWeight:700}}>TODAY 🎉</span>}{p.days<=7&&p.days>0&&<span style={{fontSize:10,background:'#ffd16620',color:'#ffd166',padding:'2px 7px',borderRadius:99,fontWeight:700}}>soon!</span>}{p.isContact&&<Pill color={DIM}>contact</Pill>}</div><div style={{fontSize:11,color:DIM}}>{new Date(p.birthday+'T00:00:00').toLocaleDateString('en-PH',{month:'long',day:'numeric'})} · turning {p.age+1}</div></div>
+            <div style={{display:'flex',flexDirection:'column',gap:5,alignItems:'flex-end'}}><div style={{fontSize:22}}>🎂</div>{!p.isContact&&<div style={{display:'flex',gap:5}}><Btn onClick={()=>{setBdraft({name:p.name,birthday:p.birthday,type:p.type});setEditBId(p.id);}} v="i" style={{fontSize:10,padding:'3px 7px'}}>✏️</Btn><Btn onClick={()=>delBday(p.id)} v="d" style={{fontSize:10,padding:'3px 7px'}}>✕</Btn></div>}{p.isContact&&<span style={{fontSize:10,color:DIM}}>edit in Contacts</span>}</div>
+          </Card>
+        ))}
+      </>}
+    </div>
+  );
+}
+
+// ══ MAIN APP ══
+const NAV=[{id:'home',icon:'⌂',label:'Home'},{id:'habits',icon:'🔥',label:'Habits'},{id:'routine',icon:'◷',label:'Routine'},{id:'mind',icon:'◈',label:'Mind'},{id:'goals',icon:'◎',label:'Goals'},{id:'kanban',icon:'▦',label:'Kanban'},{id:'projects',icon:'◩',label:'Projects'},{id:'journal',icon:'◻',label:'Journal'},{id:'finance',icon:'◬',label:'Finance'},{id:'skills',icon:'★',label:'Skills'},{id:'people',icon:'❋',label:'People'}];
+const PAGES={home:Home,habits:Habits,routine:Routine,mind:Mind,goals:Goals,kanban:Kanban,projects:Projects,journal:Journal,finance:Finance,skills:Skills,people:People};
+
+function MainApp({user}) {
+  const [active, setActive] = useState('home');
+  const [loaded, setLoaded] = useState(false);
+  const [syncSt, setSyncSt] = useState('loading');
+
+  useEffect(() => {
+    setSyncSt('loading');
+    loadStore(user.id).then(() => {
+      setLoaded(true);
+      setSyncSt('synced');
+    });
+  }, [user.id]);
+
+  if (!loaded) return (
+    <div style={{height:'100vh',background:BG,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12}}>
+      <div style={{fontSize:13,color:DIM}}>Loading your data...</div>
+    </div>
+  );
+
+  const Page = PAGES[active] || Home;
+  const syncColor = syncSt==='saving'?'#ffd166':syncSt==='synced'?A:'#ff6b6b';
+  const syncIcon = syncSt==='saving'?'⟳':syncSt==='synced'?'✓':'!';
+
+  return (
+    <div id="root" style={{display:'flex',flexDirection:'column',height:'100vh',overflow:'hidden',background:BG}}>
+      <div className="topbar">
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <div style={{width:24,height:24,background:A,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:900,color:'#000'}}>J</div>
+          <span style={{fontSize:12,fontWeight:700,color:TX,letterSpacing:1}}>JJOO'S LIFE OS</span>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:10}}>
+          <span style={{fontSize:10,color:syncColor,fontWeight:700}}>{syncIcon} {syncSt}</span>
+          <button onClick={()=>sb.auth.signOut().then(()=>window.location.reload())} style={{background:'#ffffff08',border:'none',borderRadius:6,padding:'4px 10px',color:DIM,fontSize:11}}>Sign out</button>
+        </div>
+      </div>
+      <div className="nav">
+        {NAV.map(n=>(
+          <button key={n.id} onClick={()=>setActive(n.id)} style={{display:'flex',alignItems:'center',gap:5,padding:'6px 10px',borderRadius:8,border:'none',background:active===n.id?A:'transparent',color:active===n.id?'#000':DIM,fontWeight:active===n.id?800:500,fontSize:11,whiteSpace:'nowrap',flexShrink:0}}>
+            <span>{n.icon}</span><span>{n.label}</span>
+          </button>
+        ))}
+      </div>
+      <div className="page">
+        <Page/>
+      </div>
+      <div className="bottombar">
+        <span>Life OS v9.0</span><span>11 sections · ☁️ synced</span>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [user, setUser] = useState(null);
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    sb.auth.getSession().then(({data}) => {
+      setUser(data.session?.user || null);
+      setChecking(false);
+    });
+    const {data:{subscription}} = sb.auth.onAuthStateChange((_, session) => {
+      setUser(session?.user || null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  if (checking) return <div style={{height:'100vh',background:BG,display:'flex',alignItems:'center',justifyContent:'center',color:DIM,fontSize:13}}>Loading...</div>;
+  if (!user) return <Auth onAuth={setUser}/>;
+  return <MainApp user={user}/>;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
